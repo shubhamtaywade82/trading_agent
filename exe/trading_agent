@@ -1,0 +1,131 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+$LOAD_PATH.unshift File.expand_path("../lib", __dir__)
+
+require "thor"
+require "trading_agent"
+require "dotenv/load"
+
+module TradingAgent
+  class CLI < Thor
+    desc "start", "Start the autonomous trading agent"
+    method_option :symbol,    type: :string,  default: "BTCUSDT", desc: "Symbol to trade"
+    method_option :model,     type: :string,  desc: "Ollama model (default: OLLAMA_AGENT_MODEL or qwen2.5:14b)"
+    method_option :testnet,   type: :boolean, default: true,  desc: "Use Binance Testnet"
+    method_option :confirm,   type: :boolean, default: false, aliases: "-c", desc: "Prompt before trade execution"
+    method_option :prop_desk, type: :boolean, default: false, aliases: "-p",
+                               desc: "Enable prop-desk pipeline (Build→Verify→Validate→Fine-tune→Re-verify)"
+    method_option :think,     type: :boolean, default: false, aliases: "-t",
+                               desc: "Enable LLM extended reasoning (slower, more thorough)"
+    def start
+      SemanticLogger.add_appender(io: $stdout, formatter: :color)
+      SemanticLogger.default_level = :info
+
+      exchange = TradingAgent::Exchanges::BinanceFutures.new(
+        api_key:    ENV["BINANCE_API_KEY"],
+        secret_key: ENV["BINANCE_SECRET_KEY"],
+        testnet:    options[:testnet]
+      )
+
+      model_name = options[:model] || ENV["OLLAMA_AGENT_MODEL"] || ENV["OLLAMA_MODEL"] || ENV["MODEL"] || "qwen2.5:14b"
+
+      runner = TradingAgent::Runner.new(
+        exchange:   exchange,
+        model:      model_name,
+        symbols:    [options[:symbol]],
+        confirm:    options[:confirm],
+        prop_desk:  options[:prop_desk],
+        think:      options[:think]
+      )
+
+      runner.start
+    end
+
+    desc "chat", "Start the interactive trading chat shell"
+    method_option :model,   type: :string,  desc: "Ollama model"
+    method_option :testnet, type: :boolean, default: true, desc: "Use Binance Testnet"
+    method_option :think,   type: :boolean, default: false, desc: "Enable LLM extended reasoning"
+    def chat
+      SemanticLogger.add_appender(io: $stdout, formatter: :color)
+      SemanticLogger.default_level = :info
+
+      exchange = TradingAgent::Exchanges::BinanceFutures.new(
+        api_key:    ENV["BINANCE_API_KEY"],
+        secret_key: ENV["BINANCE_SECRET_KEY"],
+        testnet:    options[:testnet]
+      )
+
+      model_name  = options[:model] || ENV["OLLAMA_AGENT_MODEL"] || ENV["OLLAMA_MODEL"] || ENV["MODEL"] || "qwen2.5:14b"
+      state       = TradingAgent::Market::State.new
+      orchestrator = TradingAgent::Llm::Orchestrator.new(state, exchange,
+                                                         model: model_name,
+                                                         think: options[:think])
+
+      shell = TradingAgent::InteractiveShell.new(state, exchange, orchestrator)
+      shell.start
+    end
+
+    desc "backtest", "Run a one-off backtest for a symbol and strategy"
+    method_option :symbol,    type: :string,  required: true, desc: "Symbol, e.g. BTCUSDT"
+    method_option :direction, type: :string,  default: "LONG", desc: "LONG or SHORT"
+    method_option :sl_atr,    type: :numeric, default: 2.0,    desc: "Stop-loss ATR multiplier"
+    method_option :tp_rr,     type: :numeric, default: 2.0,    desc: "Take-profit R:R ratio"
+    method_option :leverage,  type: :numeric, default: 3,      desc: "Leverage"
+    method_option :risk_pct,  type: :numeric, default: 1.0,    desc: "Risk percent per trade"
+    method_option :months,    type: :numeric, default: 6,      desc: "Lookback months"
+    method_option :testnet,   type: :boolean, default: false,  desc: "Use Testnet"
+    def backtest
+      SemanticLogger.add_appender(io: $stdout, formatter: :color)
+      SemanticLogger.default_level = :info
+
+      exchange = TradingAgent::Exchanges::BinanceFutures.new(
+        api_key:    ENV["BINANCE_API_KEY"],
+        secret_key: ENV["BINANCE_SECRET_KEY"],
+        testnet:    options[:testnet]
+      )
+
+      strategy = {
+        symbol:                   options[:symbol].upcase,
+        direction:                options[:direction].upcase,
+        stop_loss_atr_multiplier: options[:sl_atr].to_f,
+        take_profit_rr:           options[:tp_rr].to_f,
+        leverage:                 options[:leverage].to_i,
+        risk_percent:             options[:risk_pct].to_f,
+        entry_condition:          { volume_spike_ratio: 2.0 }
+      }
+
+      secs   = options[:months].to_i * 30 * 24 * 3600
+      now    = Time.now.utc.to_i * 1000
+      period = { start_time: now - secs * 1000, end_time: now }
+
+      engine = TradingAgent::Validation::BacktestEngine.new(exchange)
+      result = engine.run(strategy, period: period)
+
+      if result.nil?
+        puts "Backtest returned no results (insufficient data or no trades triggered)."
+        return
+      end
+
+      puts "\n=== BACKTEST RESULTS ==="
+      puts "Symbol:       #{options[:symbol]}  |  Direction: #{options[:direction]}"
+      puts "Period:       #{options[:months]} months  |  Candles: 1m"
+      puts "---"
+      puts "Trades:       #{result.total_trades}"
+      puts "Win Rate:     #{result.win_rate}%"
+      puts "Profit Factor:#{result.profit_factor}"
+      puts "Total Return: #{result.total_return_pct}%"
+      puts "Max Drawdown: #{result.max_drawdown_pct}%"
+      puts "Avg R:R:      #{result.avg_rr}"
+      puts "Sharpe:       #{result.sharpe_ratio}"
+      puts "========================\n"
+    end
+
+    desc "version", "Print the version"
+    def version
+      puts "TradingAgent v#{TradingAgent::VERSION}"
+    end
+  end
+end
+
+TradingAgent::CLI.start(ARGV)
