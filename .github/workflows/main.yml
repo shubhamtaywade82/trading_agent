@@ -1,0 +1,43 @@
+name: Ruby Gem CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Ruby ${{ matrix.ruby }}
+    strategy:
+      matrix:
+        ruby:
+          - "3.3.4"
+          - "3.2.0"
+
+    steps:
+      - name: Checkout trading_agent
+        uses: actions/checkout@v4
+        with:
+          path: trading_agent
+          persist-credentials: false
+
+      - name: Checkout ollama_agent
+        uses: actions/checkout@v4
+        with:
+          repository: shubhamtaywade82/ollama_agent
+          path: ollama_agent
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+          working-directory: trading_agent
+
+      - name: Run RSpec
+        run: bundle exec rspec
+        working-directory: trading_agent
