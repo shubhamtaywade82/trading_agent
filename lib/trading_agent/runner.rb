@@ -60,10 +60,18 @@ module TradingAgent
       EventBus.subscribe("market.tick") { |_| }
     end
 
+    # Update market state with optional account data. Account‑specific calls are
+    # guarded by `respond_to?` so the runner works with a lightweight market‑only
+    # exchange implementation.
     def update_initial_state
-      @state.update_balances(@exchange.fetch_balances)
-      positions = @exchange.fetch_positions
-      positions.each { |pos| @state.update_position(pos[:symbol], pos) }
+      if @exchange.respond_to?(:fetch_balances)
+        @state.update_balances(@exchange.fetch_balances)
+      end
+
+      if @exchange.respond_to?(:fetch_positions)
+        positions = @exchange.fetch_positions
+        positions.each { |pos| @state.update_position(pos[:symbol], pos) }
+      end
     rescue StandardError => e
       TradingAgent.logger.error("Failed to update initial state", error: e.message)
     end
